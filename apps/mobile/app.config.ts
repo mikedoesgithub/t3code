@@ -415,6 +415,9 @@ const config: ExpoConfig = {
         ios: {
           // No deploymentTarget here: expo-build-properties rejects anything
           // below 16.4. withIos16ExpoPods applies the 16.0 floor instead.
+          // Prebuilt XCFrameworks ship pinned at 16.4, so build pods from
+          // source to honor the lowered floors.
+          usePrecompiledModules: false,
           // AppCheckCore 11.3+ includes Swift and needs module maps for these Objective-C dependencies.
           extraPods: [
             { name: "GoogleUtilities", modular_headers: true },

@@ -24,6 +24,23 @@ workflows:
         script: |
           cd apps/mobile
           npx expo prebuild --platform ios --clean
+      - name: Enforce iOS 16.0 deployment targets
+        script: |
+          set -euo pipefail
+          cd apps/mobile
+          # Config-plugin mods (e.g. Clerk's) rewrite the deployment target
+          # after our prebuild plugin runs, so pin the final files here,
+          # quote-tolerant. This stamps MinimumOSVersion 16.0 on the app and
+          # extensions (TrollStore installs on iOS 16).
+          find ios -name project.pbxproj | while read -r proj; do
+            sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = "?[0-9.]*"?;/IPHONEOS_DEPLOYMENT_TARGET = 16.0;/g' "$proj"
+          done
+          echo "Remaining deployment targets:"
+          grep -rh "IPHONEOS_DEPLOYMENT_TARGET" ios --include=project.pbxproj | sort | uniq -c
+          if grep -rq "IPHONEOS_DEPLOYMENT_TARGET = 1[7-9]" ios --include=project.pbxproj; then
+            echo "ERROR: deployment target above iOS 16.0 remains"
+            exit 1
+          fi
       - name: Archive unsigned for TrollStore
         script: |
           set -euo pipefail

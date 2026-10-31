@@ -185,7 +185,7 @@ function pinXcodeDeploymentTargets(projectRoot) {
     .filter((entry) => entry.isDirectory() && entry.name.endsWith(".xcodeproj"))
     .map((entry) => path.join(projectRoot, entry.name, "project.pbxproj"))
     .filter((file) => fs.existsSync(file));
-  const pattern = /IPHONEOS_DEPLOYMENT_TARGET = [^;]+;/g;
+  const pattern = /IPHONEOS_DEPLOYMENT_TARGET = "?[^";]*"?;/g;
   const replacement = `IPHONEOS_DEPLOYMENT_TARGET = ${IOS_FLOOR};`;
   for (const file of targets) {
     const before = fs.readFileSync(file, "utf8");

@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.homepage = 'https://t3tools.com'
   s.license = { :type => 'UNLICENSED' }
   s.author = { 'T3 Tools' => 'hello@t3tools.com' }
-  s.platforms = { :ios => '16.1' }
+  s.platforms = { :ios => '16.0' }
   s.source = { :path => '.' }
   s.source_files = 'ios/**/*.{h,m,mm,swift}'
   s.vendored_frameworks = 'Vendor/libghostty/GhosttyKit.xcframework'
