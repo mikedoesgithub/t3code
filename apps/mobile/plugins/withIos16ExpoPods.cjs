@@ -13,6 +13,7 @@ const PATTERNS = [
   /(:ios\s*=>\s*['"])(\d+)\.(\d+)(['"])/g,
   /(s\.ios\.deployment_target\s*=\s*['"])(\d+)\.(\d+)(['"])/g,
   /(s\.platform\s*=\s*:ios\s*,\s*['"])(\d+)\.(\d+)(['"])/g,
+  /(IPHONEOS_DEPLOYMENT_TARGET\s*=\s*['"]?)(\d+)\.(\d+)/g,
 ];
 
 function needsFloor(major, minor) {
@@ -41,13 +42,24 @@ function walkPodspecs(dir, seen, out) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isSymbolicLink()) {
-      const real = fs.realpathSync(full);
+      let real;
+      try {
+        real = fs.realpathSync(full);
+      } catch {
+        continue;
+      }
       if (seen.has(real)) continue;
       seen.add(real);
-      if (fs.statSync(real).isDirectory()) walkPodspecs(real, seen, out);
-      else if (real.endsWith(".podspec")) out.push(real);
+      try {
+        if (fs.statSync(real).isDirectory()) walkPodspecs(real, seen, out);
+        else if (real.endsWith(".podspec")) out.push(real);
+      } catch {
+        continue;
+      }
     } else if (entry.isDirectory()) {
-      if (entry.name.startsWith(".")) continue;
+      // Descend into .pnpm: transitive deps live in sibling store dirs that
+      // direct symlinks alone never reach.
+      if (entry.name.startsWith(".") && entry.name !== ".pnpm") continue;
       walkPodspecs(full, seen, out);
     } else if (entry.name.endsWith(".podspec")) {
       out.push(full);
@@ -90,6 +102,28 @@ function lowerPodspecFloors(mobileRoot) {
     console.log(`T3Code: lowered iOS floor to ${IOS_FLOOR} in ${file}`);
   }
   console.log(`T3Code: withIos16ExpoPods lowered ${lowered.length} podspecs`);
+  assertNoHigherFloors(specs, repoRoot);
+}
+
+function assertNoHigherFloors(specs, repoRoot) {
+  const offenders = [];
+  for (const spec of specs) {
+    const contents = fs.readFileSync(spec, "utf8");
+    for (const pattern of PATTERNS) {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(contents)) !== null) {
+        if (needsFloor(Number(match[2]), Number(match[3]))) {
+          offenders.push(`${path.relative(repoRoot, spec)}: ${match[1]}${match[2]}.${match[3]}${match[4] ?? ""}`);
+        }
+      }
+    }
+  }
+  if (offenders.length > 0) {
+    throw new Error(
+      `withIos16ExpoPods: ${offenders.length} podspecs still require iOS above ${IOS_FLOOR}:\n${offenders.join("\n")}`,
+    );
+  }
 }
 
 function pinPodfilePlatform(projectRoot) {
