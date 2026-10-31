@@ -26,11 +26,18 @@ workflows:
           npx expo prebuild --platform ios --clean
       - name: Archive unsigned for TrollStore
         script: |
+          set -euo pipefail
           cd apps/mobile
           WORKSPACE=$(ls -d ios/*.xcworkspace | head -n 1)
-          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null | awk '/Schemes:/{f=1;next} f && NF && $1 != "Pods" {print $1; exit}')
+          # The app scheme matches the workspace name; first-alphabetical would
+          # grab a pod library scheme (e.g. AppleLLM) and archive no .app.
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          xcodebuild -list -workspace "$WORKSPACE" | grep -q " $SCHEME$" || {
+            echo "Scheme $SCHEME not found. Available:"
+            xcodebuild -list -workspace "$WORKSPACE"
+            exit 1
+          }
           echo "Workspace: $WORKSPACE Scheme: $SCHEME"
-          test -n "$SCHEME"
           xcodebuild archive \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
@@ -43,11 +50,13 @@ workflows:
             COMPILER_INDEX_STORE_ENABLE=NO
       - name: Fakesign with ldid for TrollStore
         script: |
+          set -euo pipefail
           brew install ldid
           cd apps/mobile
           APP_DIR=$(find build/T3Code.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n 1)
           echo "App: $APP_DIR"
           test -n "$APP_DIR"
+          test -f "$APP_DIR/$(basename "$APP_DIR" .app)"
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP_DIR" Payload/
@@ -97,7 +106,9 @@ workflows:
           sign_with_entitlements "$APP_DIR/$APP_NAME" "$APP_NAME"
       - name: Package TrollStore IPA
         script: |
+          set -euo pipefail
           cd apps/mobile
+          test -n "$(find Payload -maxdepth 1 -name '*.app')"
           rm -f T3Code-trollstore.ipa
           zip -r -y T3Code-trollstore.ipa Payload
           ls -la T3Code-trollstore.ipa
