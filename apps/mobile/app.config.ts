@@ -413,7 +413,9 @@ const config: ExpoConfig = {
           ].join("\n"),
         },
         ios: {
-          deploymentTarget: "18.0",
+          // Floor for TrollStore sideloads on older devices; Expo 58 pods are
+          // lowered to match by withIos16ExpoPods.
+          deploymentTarget: "16.0",
           // AppCheckCore 11.3+ includes Swift and needs module maps for these Objective-C dependencies.
           extraPods: [
             { name: "GoogleUtilities", modular_headers: true },
@@ -423,6 +425,10 @@ const config: ExpoConfig = {
       },
     ],
     "./plugins/withIosCocoaPodsUuidCache.cjs",
+    // Lower Expo pod floors to the deployment target before pod install.
+    "./plugins/withIos16ExpoPods.cjs",
+    // Unsigned TrollStore builds use the OS default keychain group.
+    "./plugins/withTrollStoreEntitlements.cjs",
     // Compile out the unused pedometer to avoid an iOS motion purpose string.
     ["expo-sensors", { motionPermission: false }],
     // Mods run in reverse order; expo-widgets must create and wipe the target before assets are added.
