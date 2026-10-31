@@ -1,6 +1,6 @@
 workflows:
   t3-trollstore:
-    name: T3 Code TrollStore (iOS 16+, unsigned)
+    name: T3 Code TrollStore (iOS 16+, fakesigned)
     instance_type: mac_mini_m2
     max_build_duration: 120
     environment:
@@ -10,12 +10,6 @@ workflows:
       vars:
         APP_VARIANT: production
         EXPO_NO_GIT_STATUS: "1"
-        # Personal-team variant: no widgets/share extensions, no App Groups,
-        # push, or Apple Sign-In entitlements, so the unsigned bundle installs
-        # cleanly under TrollStore.
-        T3CODE_IOS_PERSONAL_TEAM: "1"
-        T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID: com.t3tools.t3code
-        T3CODE_TROLLSTORE: "1"
     scripts:
       - name: Install pnpm and dependencies
         script: |
@@ -47,15 +41,64 @@ workflows:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             COMPILER_INDEX_STORE_ENABLE=NO
+      - name: Fakesign with ldid for TrollStore
+        script: |
+          brew install ldid
+          cd apps/mobile
+          APP_DIR=$(find build/T3Code.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n 1)
+          echo "App: $APP_DIR"
+          test -n "$APP_DIR"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_DIR" Payload/
+          APP_DIR="Payload/$(basename "$APP_DIR")"
+          APP_NAME="$(basename "$APP_DIR" .app)"
+
+          sign_with_entitlements() {
+            # $1 = Mach-O binary, $2 = target name used to find its .entitlements
+            local ents
+            ents=$(find ios -name "$2.entitlements" | head -n 1)
+            if [ -n "$ents" ]; then
+              echo "Signing $1 with $ents"
+              ldid -S"$ents" "$1"
+            else
+              echo "Signing $1 without entitlements"
+              ldid -S "$1"
+            fi
+          }
+
+          # Frameworks and bundled dylibs carry no entitlements.
+          find "$APP_DIR/Frameworks" "$APP_DIR" -maxdepth 2 -type f \( -name '*.dylib' -o -name '*.so' \) 2>/dev/null | while read -r lib; do
+            if file "$lib" | grep -q 'Mach-O'; then
+              echo "Signing $lib"
+              ldid -S "$lib"
+            fi
+          done
+          find "$APP_DIR/Frameworks" -name '*.framework' -maxdepth 2 2>/dev/null | while read -r fw; do
+            bin="$fw/$(basename "$fw" .framework)"
+            if [ -f "$bin" ] && file "$bin" | grep -q 'Mach-O'; then
+              echo "Signing $bin"
+              ldid -S "$bin"
+            fi
+          done
+
+          # App extensions (widgets, share) with their own entitlements.
+          for appex in "$APP_DIR"/PlugIns/*.appex; do
+            [ -e "$appex" ] || continue
+            name=$(basename "$appex" .appex)
+            bin="$appex/$name"
+            if [ -f "$bin" ]; then
+              sign_with_entitlements "$bin" "$name"
+            fi
+          done
+
+          # Main app binary with the full entitlement set (App Groups, push,
+          # keychain groups, associated domains). TrollStore honors these.
+          sign_with_entitlements "$APP_DIR/$APP_NAME" "$APP_NAME"
       - name: Package TrollStore IPA
         script: |
           cd apps/mobile
-          APP_PATH=$(find build/T3Code.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n 1)
-          echo "App: $APP_PATH"
-          test -n "$APP_PATH"
-          rm -rf Payload T3Code-trollstore.ipa
-          mkdir -p Payload
-          cp -R "$APP_PATH" Payload/
+          rm -f T3Code-trollstore.ipa
           zip -r -y T3Code-trollstore.ipa Payload
           ls -la T3Code-trollstore.ipa
           cd ../..

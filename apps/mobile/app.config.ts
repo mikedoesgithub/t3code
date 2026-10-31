@@ -426,8 +426,6 @@ const config: ExpoConfig = {
     "./plugins/withIosCocoaPodsUuidCache.cjs",
     // Lower Expo pod floors to the deployment target before pod install.
     "./plugins/withIos16ExpoPods.cjs",
-    // Unsigned TrollStore builds use the OS default keychain group.
-    "./plugins/withTrollStoreEntitlements.cjs",
     // Compile out the unused pedometer to avoid an iOS motion purpose string.
     ["expo-sensors", { motionPermission: false }],
     // Mods run in reverse order; expo-widgets must create and wipe the target before assets are added.
