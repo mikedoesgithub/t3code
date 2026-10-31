@@ -3,9 +3,11 @@ const path = require("node:path");
 
 const { withDangerousMod } = require("expo/config-plugins");
 
-// Expo SDK 58 pins its pods to iOS 16.4, which makes `pod install` reject a
-// lower Podfile platform. Rewrite those floors to 16.0 so the compiler (not
-// the resolver) verifies iOS 16 support. Runs before `pod install`.
+// Expo SDK 58 pins its pods to iOS 16.4 and expo-build-properties rejects a
+// lower deploymentTarget, so this plugin owns the 16.0 floor: it lowers
+// third-party podspec floors before `pod install` resolution, pins the Podfile
+// platform, and pins the Xcode targets. The compiler (not the resolver) then
+// verifies iOS 16 support. Runs before `pod install`.
 const IOS_FLOOR = "16.0";
 const PATTERNS = [
   /(:ios\s*=>\s*['"])(\d+)\.(\d+)(['"])/g,
@@ -57,29 +59,67 @@ module.exports = function withIos16ExpoPods(config) {
   return withDangerousMod(config, [
     "ios",
     (nextConfig) => {
-      const mobileRoot = path.dirname(nextConfig.modRequest.platformProjectRoot);
-      const repoRoot = path.resolve(mobileRoot, "..", "..");
-      const roots = [
-        path.join(repoRoot, "node_modules"),
-        path.join(mobileRoot, "node_modules"),
-      ];
-      const seen = new Set();
-      const specs = [];
-      for (const root of roots) walkPodspecs(root, seen, specs);
-
-      const lowered = [];
-      for (const spec of specs) {
-        const before = fs.readFileSync(spec, "utf8");
-        const { contents, touched } = rewritePodspec(before);
-        if (!touched) continue;
-        fs.writeFileSync(spec, contents, "utf8");
-        lowered.push(path.relative(repoRoot, spec));
-      }
-      for (const file of lowered) {
-        console.log(`T3Code: lowered iOS floor to ${IOS_FLOOR} in ${file}`);
-      }
-      console.log(`T3Code: withIos16ExpoPods lowered ${lowered.length} podspecs`);
+      const projectRoot = nextConfig.modRequest.platformProjectRoot;
+      lowerPodspecFloors(nextConfig.modRequest.projectRoot);
+      pinPodfilePlatform(projectRoot);
+      pinXcodeDeploymentTargets(projectRoot);
       return nextConfig;
     },
   ]);
 };
+
+function lowerPodspecFloors(mobileRoot) {
+  const repoRoot = path.resolve(mobileRoot, "..", "..");
+  const roots = [
+    path.join(repoRoot, "node_modules"),
+    path.join(mobileRoot, "node_modules"),
+  ];
+  const seen = new Set();
+  const specs = [];
+  for (const root of roots) walkPodspecs(root, seen, specs);
+
+  const lowered = [];
+  for (const spec of specs) {
+    const before = fs.readFileSync(spec, "utf8");
+    const { contents, touched } = rewritePodspec(before);
+    if (!touched) continue;
+    fs.writeFileSync(spec, contents, "utf8");
+    lowered.push(path.relative(repoRoot, spec));
+  }
+  for (const file of lowered) {
+    console.log(`T3Code: lowered iOS floor to ${IOS_FLOOR} in ${file}`);
+  }
+  console.log(`T3Code: withIos16ExpoPods lowered ${lowered.length} podspecs`);
+}
+
+function pinPodfilePlatform(projectRoot) {
+  const podfilePath = path.join(projectRoot, "Podfile");
+  const podfile = fs.readFileSync(podfilePath, "utf8");
+  const line = `platform :ios, '${IOS_FLOOR}'`;
+  const next = /^platform :ios.*$/m.test(podfile)
+    ? podfile.replace(/^platform :ios.*$/m, line)
+    : `${line}\n${podfile}`;
+  if (next !== podfile) {
+    fs.writeFileSync(podfilePath, next, "utf8");
+    console.log(`T3Code: pinned Podfile platform to iOS ${IOS_FLOOR}`);
+  }
+}
+
+function pinXcodeDeploymentTargets(projectRoot) {
+  const targets = fs
+    .readdirSync(projectRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.endsWith(".xcodeproj"))
+    .map((entry) => path.join(projectRoot, entry.name, "project.pbxproj"))
+    .filter((file) => fs.existsSync(file));
+  const pattern = /IPHONEOS_DEPLOYMENT_TARGET = [^;]+;/g;
+  const replacement = `IPHONEOS_DEPLOYMENT_TARGET = ${IOS_FLOOR};`;
+  for (const file of targets) {
+    const before = fs.readFileSync(file, "utf8");
+    const matches = before.match(pattern) || [];
+    if (matches.length === 0) {
+      throw new Error(`Unable to pin iOS floor: no IPHONEOS_DEPLOYMENT_TARGET in ${file}.`);
+    }
+    fs.writeFileSync(file, before.replace(pattern, replacement), "utf8");
+    console.log(`T3Code: pinned ${matches.length} targets to iOS ${IOS_FLOOR} in ${path.basename(path.dirname(file))}`);
+  }
+}

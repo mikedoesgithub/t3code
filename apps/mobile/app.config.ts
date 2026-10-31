@@ -413,9 +413,8 @@ const config: ExpoConfig = {
           ].join("\n"),
         },
         ios: {
-          // Floor for TrollStore sideloads on older devices; Expo 58 pods are
-          // lowered to match by withIos16ExpoPods.
-          deploymentTarget: "16.0",
+          // No deploymentTarget here: expo-build-properties rejects anything
+          // below 16.4. withIos16ExpoPods applies the 16.0 floor instead.
           // AppCheckCore 11.3+ includes Swift and needs module maps for these Objective-C dependencies.
           extraPods: [
             { name: "GoogleUtilities", modular_headers: true },
