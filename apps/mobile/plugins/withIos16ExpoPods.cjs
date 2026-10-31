@@ -72,6 +72,7 @@ module.exports = function withIos16ExpoPods(config) {
     "ios",
     (nextConfig) => {
       const projectRoot = nextConfig.modRequest.platformProjectRoot;
+      dropClerkNativePodspec(nextConfig.modRequest.projectRoot);
       lowerPodspecFloors(nextConfig.modRequest.projectRoot);
       pinPodfilePlatform(projectRoot);
       pinXcodeDeploymentTargets(projectRoot);
@@ -79,6 +80,45 @@ module.exports = function withIos16ExpoPods(config) {
     },
   ]);
 };
+
+function dropClerkNativePodspec(mobileRoot) {
+  // clerk-ios ships through SPM, declares iOS 17, and links Observation: any
+  // binary containing it dies at launch on iOS 16 (dyld has no Observation to
+  // load). With no podspec, iOS autolinking skips the package entirely, so no
+  // ClerkExpo pod, no ClerkKit, and no provider references are generated. The
+  // Settings auth screen detects the missing native module and signs in
+  // through the browser instead.
+  const candidates = [];
+  try {
+    candidates.push(
+      path.dirname(
+        require.resolve("@clerk/expo-native-components/package.json", {
+          paths: [mobileRoot],
+        }),
+      ),
+    );
+  } catch {
+    // Fall through to the manual search below.
+  }
+  candidates.push(
+    path.join(mobileRoot, "node_modules", "@clerk", "expo-native-components"),
+  );
+  for (const dir of candidates) {
+    let real;
+    try {
+      real = fs.realpathSync(dir);
+    } catch {
+      continue;
+    }
+    const podspec = path.join(real, "ios", "ClerkExpo.podspec");
+    if (!fs.existsSync(podspec)) continue;
+    fs.rmSync(podspec);
+    console.log(
+      `T3Code: dropped ClerkExpo.podspec for the iOS 16 build (${path.relative(mobileRoot, podspec)})`,
+    );
+    return;
+  }
+}
 
 function lowerPodspecFloors(mobileRoot) {
   const repoRoot = path.resolve(mobileRoot, "..", "..");
