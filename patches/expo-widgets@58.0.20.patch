@@ -89,13 +89,27 @@ index 29e4f15..629e547 100644
        let initialState = LiveActivityAttributes.ContentState(name: name, props: props)
        let activity = try Activity.request(
 diff --git a/ios/Widgets/Utils.swift b/ios/Widgets/Utils.swift
-index 76b2199..6cb52c3 100644
 --- a/ios/Widgets/Utils.swift
 +++ b/ios/Widgets/Utils.swift
-@@ -125,6 +125,10 @@ func getLiveActivityEnvironment(for environment: EnvironmentValues, in context:
-     "isStale": context.isStale
+@@ -117,14 +117,23 @@
+   return env
+ }
+
++// Live Activities need iOS 16.1 (ActivityKit) and the request/content/end
++// spellings used here need 16.2; the deployment floor is 16.0 for TrollStore.
++@available(iOS 16.1, *)
+ func getLiveActivityEnvironment(for environment: EnvironmentValues, in context: ActivityViewContext<LiveActivityAttributes>) -> [String: Any] {
+   var env: [String: Any] = [
+     "colorScheme": "\(environment.colorScheme)",
+     "isLuminanceReduced": environment.isLuminanceReduced,
+-    "isActivityFullscreen": environment.isActivityFullscreen,
+-    "isStale": context.isStale
++    "isActivityFullscreen": environment.isActivityFullscreen
    ]
- 
++  if #available(iOS 16.2, *) {
++    env["isStale"] = context.isStale
++  }
+
 +  if #available(iOS 26.0, *) {
 +    env["isLiquidGlassAvailable"] = true
 +  }
@@ -264,3 +278,147 @@ index 690d069..c60dd79 100644
    getInstances(): NativeLiveActivity[];
 +  dismissEnded(): void;
  }
+diff --git a/ios/LiveActivity.swift b/ios/LiveActivity.swift
+--- a/ios/LiveActivity.swift
++++ b/ios/LiveActivity.swift
+@@ -12,7 +12,12 @@ final class LiveActivity: SharedObject {
+     super.init()
+   }
+
+   func update(props: String?, staleDate: Date?) async throws {
++    // Activity.request/content/update spellings need iOS 16.2; the deployment
++    // floor is 16.0 for TrollStore, so decline instead of crashing availability.
++    guard #available(iOS 16.2, *) else {
++      throw LiveActivitiesNotSupportedException()
++    }
+     guard let activity = Activity<LiveActivityAttributes>.activities.first(where: { $0.id == id }) else {
+       throw LiveActivityNotFoundException(id)
+     }
+@@ -21,6 +25,9 @@ final class LiveActivity: SharedObject {
+   }
+
+   func end(dismissalPolicy: LiveActivityDismissalPolicy?, afterDate: Date?, props: String?, contentDate: Date?) async throws {
++    guard #available(iOS 16.2, *) else {
++      throw LiveActivitiesNotSupportedException()
++    }
+     guard let activity = Activity<LiveActivityAttributes>.activities.first(where: { $0.id == id }) else {
+       throw LiveActivityNotFoundException(id)
+     }
+@@ -40,6 +48,9 @@ final class LiveActivity: SharedObject {
+   }
+
+   func getPushToken() throws -> String? {
++    guard #available(iOS 16.1, *) else {
++      return nil
++    }
+     guard let activity = Activity<LiveActivityAttributes>.activities.first(where: { $0.id == id }) else {
+       throw LiveActivityNotFoundException(id)
+     }
+@@ -47,6 +58,7 @@ final class LiveActivity: SharedObject {
+     return tokenData.reduce("") { $0 + String(format: "%02x", $1) }
+   }
+
++  @available(iOS 16.1, *)
+   func observePushTokenUpdates(for activity: Activity<LiveActivityAttributes>, pushNotificationsEnabled: Bool) {
+     guard pushNotificationsEnabled else {
+       return
+diff --git a/ios/LiveActivityFactory.swift b/ios/LiveActivityFactory.swift
+--- a/ios/LiveActivityFactory.swift
++++ b/ios/LiveActivityFactory.swift
+@@ -17,5 +17,8 @@ final class LiveActivityFactory: SharedObject {
+   // 4 more. getInstances() can't see it, so dismiss the ended ones directly.
+   func dismissEnded() {
++    guard #available(iOS 16.2, *) else {
++      return
++    }
+     for activity in Activity<LiveActivityAttributes>.activities
+     where activity.content.state.name == name && activity.activityState == .ended {
+       Task { await activity.end(nil, dismissalPolicy: .immediate) }
+@@ -27,6 +30,10 @@ final class LiveActivityFactory: SharedObject {
+   }
+
+   func start(props: String?, url: URL?, staleDate: Date?) throws -> LiveActivity {
++    // The request(content:pushType:) spelling needs iOS 16.2.
++    guard #available(iOS 16.2, *) else {
++      throw LiveActivitiesNotSupportedException()
++    }
+     guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+       throw LiveActivitiesNotSupportedException()
+     }
+@@ -44,6 +51,9 @@ final class LiveActivityFactory: SharedObject {
+   }
+
+   func getInstances() throws -> [LiveActivity] {
++    guard #available(iOS 16.2, *) else {
++      return []
++    }
+     let activities = Activity<LiveActivityAttributes>.activities
+       // Filter LiveActivity instances for activities that don't match the factory's name.
+       .filter { $0.content.state.name == name }
+diff --git a/ios/WidgetsRecords.swift b/ios/WidgetsRecords.swift
+--- a/ios/WidgetsRecords.swift
++++ b/ios/WidgetsRecords.swift
+@@ -28,7 +28,8 @@ internal enum LiveActivityDismissalPolicy: String, Enumerable {
+   case `default`
+   case immediate
+   case after
+
++  @available(iOS 16.1, *)
+   internal func toDismissalPolicy(date: Date?) -> ActivityUIDismissalPolicy {
+     return switch self {
+     case .default: .default
+diff --git a/ios/Widgets/WidgetLiveActivity.swift b/ios/Widgets/WidgetLiveActivity.swift
+--- a/ios/Widgets/WidgetLiveActivity.swift
++++ b/ios/Widgets/WidgetLiveActivity.swift
+@@ -21,6 +21,9 @@ struct LiveActivityAttributes: ActivityAttributes {
+   }
+ }
+
++// ActivityKit views need iOS 16.1 while the deployment floor is 16.0 for
++// TrollStore. The generated widget bundle only registers this below.
++@available(iOS 16.1, *)
+ public struct WidgetLiveActivity: Widget {
+   let widgetContext: AppContext = AppContext()
+
+@@ -76,6 +79,7 @@ public struct WidgetLiveActivity: Widget {
+   }
+ }
+
++@available(iOS 16.1, *)
+ private struct LiveActivitySectionView: View {
+   @Environment(\.self) var env
+   let context: ActivityViewContext<LiveActivityAttributes>
+@@ -91,6 +95,7 @@ private struct LiveActivitySectionView: View {
+   }
+ }
+
++@available(iOS 16.1, *)
+ private struct LiveActivityBannerView: View {
+   // Read inside the rendered view: Widget-level values do not include the
+   // presentation's color scheme, rendering mode, or reduced-luminance state.
+diff --git a/plugin/src/ios/withWidgetSourceFiles.ts b/plugin/src/ios/withWidgetSourceFiles.ts
+--- a/plugin/src/ios/withWidgetSourceFiles.ts
++++ b/plugin/src/ios/withWidgetSourceFiles.ts
+@@ -199,4 +199,8 @@ struct ExportWidgets${index}: WidgetBundle {
+       .join('\n    ')}
+-    ${!isLastChunk ? `ExportWidgets${index + 1}().body` : `WidgetLiveActivity()`}
++    // WidgetLiveActivity is iOS 16.1+ (ActivityKit) while the deployment
++    // floor is 16.0 for TrollStore.
++    ${!isLastChunk ? `ExportWidgets${index + 1}().body` : `if #available(iOS 16.1, *) {
++      WidgetLiveActivity()
++    }`}
+   }
+ }`;
+diff --git a/plugin/build/ios/withWidgetSourceFiles.js b/plugin/build/ios/withWidgetSourceFiles.js
+--- a/plugin/build/ios/withWidgetSourceFiles.js
++++ b/plugin/build/ios/withWidgetSourceFiles.js
+@@ -227,4 +227,8 @@ struct ExportWidgets${index}: WidgetBundle {
+     }).join('\n    ')}
+-    ${!isLastChunk ? `ExportWidgets${index + 1}().body` : `WidgetLiveActivity()`}
++    // WidgetLiveActivity is iOS 16.1+ (ActivityKit) while the deployment
++    // floor is 16.0 for TrollStore.
++    ${!isLastChunk ? `ExportWidgets${index + 1}().body` : `if #available(iOS 16.1, *) {
++      WidgetLiveActivity()
++    }`}
+   }
+ }`;
