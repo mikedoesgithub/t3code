@@ -1,5 +1,4 @@
-import { useAuth, useClerk, useUser } from "@clerk/expo";
-import { useHostedAuth } from "@clerk/expo/hosted-auth";
+import { useAuth, useClerk, useSignIn, useSignUp, useUser } from "@clerk/expo";
 import {
   AuthView,
   type UserProfileCustomPage,
@@ -7,10 +6,10 @@ import {
 } from "@clerk/expo/native-components";
 import { useNavigation } from "@react-navigation/native";
 import { requireOptionalNativeModule } from "expo";
-import { makeRedirectUri } from "expo-auth-session";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 
+import { AppTextInput } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { ControlPill } from "../../components/ui/ControlPill";
 import * as Dialog from "../../components/ui/Dialog";
@@ -87,46 +86,225 @@ function FallbackHeader(props: { readonly title: string; readonly onBack: () => 
 }
 
 function FallbackSignInView(props: { readonly onBack: () => void }) {
-  const { startHostedAuth } = useHostedAuth();
+  // Browser hosted auth needs the app's custom-scheme redirect allowlisted on
+  // the Clerk instance (dashboard), which this build can't rely on, so sign in
+  // with an email code instead. Pure JS, no redirect URI involved.
+  const { signIn } = useSignIn();
+  const { signUp } = useSignUp();
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [step, setStep] = useState<"email" | "code">("email");
+  const [isNewAccount, setIsNewAccount] = useState(false);
   const [pending, setPending] = useState(false);
-  // The app scheme is registered for callbacks; the bundle-id default is not.
-  const redirectUrl = useMemo(() => makeRedirectUri({ path: "hosted-auth-callback" }), []);
-  const signIn = async () => {
-    if (pending) return;
+
+  const sendCode = async () => {
+    if (pending || !signIn || !signUp) return;
+    const identifier = email.trim();
+    if (!identifier) {
+      Dialog.alert("Enter your email", "Type the email address for your T3 account first.");
+      return;
+    }
     setPending(true);
     try {
-      const { createdSessionId } = await startHostedAuth({ redirectUrl });
-      if (!createdSessionId) {
-        Dialog.alert(
-          "Sign-in didn't finish",
-          "The browser closed before sign-in completed. Try again.",
-        );
+      const { error: createError } = await signIn.create({ identifier });
+      if (createError) {
+        if (isIdentifierNotFoundError(createError)) {
+          const { error: signUpError } = await signUp.create({ emailAddress: identifier });
+          if (signUpError) {
+            Dialog.alert("Couldn't send a code", clerkErrorMessage(signUpError));
+            return;
+          }
+          const { error: verifyError } = await signUp.verifications.sendEmailCode();
+          if (verifyError) {
+            Dialog.alert("Couldn't send a code", clerkErrorMessage(verifyError));
+            return;
+          }
+          setIsNewAccount(true);
+          setStep("code");
+        } else {
+          Dialog.alert("Couldn't send a code", clerkErrorMessage(createError));
+        }
+        return;
       }
+      if (signIn.status === "complete") {
+        const { error: finalizeError } = await signIn.finalize();
+        if (finalizeError) Dialog.alert("Couldn't sign in", clerkErrorMessage(finalizeError));
+        return;
+      }
+      const { error: sendError } = await signIn.emailCode.sendCode();
+      if (sendError) {
+        Dialog.alert("Couldn't send a code", clerkErrorMessage(sendError));
+        return;
+      }
+      setIsNewAccount(false);
+      setStep("code");
     } catch (error) {
-      Dialog.alert(
-        "Couldn't sign in",
-        error instanceof Error ? error.message : "The browser sign-in failed. Try again.",
-      );
+      Dialog.alert("Couldn't send a code", clerkErrorMessage(error));
     } finally {
       setPending(false);
     }
   };
+
+  const verifyCode = async () => {
+    if (pending || !signIn || !signUp) return;
+    const cleanCode = code.trim();
+    if (!cleanCode) {
+      Dialog.alert("Enter the code", "Type the code we emailed you, then verify.");
+      return;
+    }
+    setPending(true);
+    try {
+      if (isNewAccount) {
+        const { error } = await signUp.verifications.verifyEmailCode({ code: cleanCode });
+        if (error) {
+          Dialog.alert("Couldn't sign in", clerkErrorMessage(error));
+          return;
+        }
+        if (signUp.status === "complete") {
+          const { error: finalizeError } = await signUp.finalize();
+          if (finalizeError) Dialog.alert("Couldn't sign in", clerkErrorMessage(finalizeError));
+        } else {
+          Dialog.alert("Couldn't sign in", "That code didn't finish creating the account. Try again.");
+        }
+      } else {
+        const { error } = await signIn.emailCode.verifyCode({ code: cleanCode });
+        if (error) {
+          Dialog.alert("Couldn't sign in", clerkErrorMessage(error));
+          return;
+        }
+        if (signIn.status === "complete") {
+          const { error: finalizeError } = await signIn.finalize();
+          if (finalizeError) Dialog.alert("Couldn't sign in", clerkErrorMessage(finalizeError));
+        } else {
+          Dialog.alert("Couldn't sign in", "That code wasn't accepted. Try again.");
+        }
+      }
+    } catch (error) {
+      Dialog.alert("Couldn't sign in", clerkErrorMessage(error));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const resendCode = async () => {
+    if (pending || !signIn || !signUp) return;
+    setPending(true);
+    try {
+      const { error } = isNewAccount
+        ? await signUp.verifications.sendEmailCode()
+        : await signIn.emailCode.sendCode();
+      if (error) Dialog.alert("Couldn't resend", clerkErrorMessage(error));
+    } catch (error) {
+      Dialog.alert("Couldn't resend", clerkErrorMessage(error));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const useDifferentEmail = () => {
+    setStep("email");
+    setCode("");
+  };
+
+  if (step === "code") {
+    return (
+      <View className="flex-1">
+        <FallbackHeader title="T3 Connect" onBack={props.onBack} />
+        <View className="flex-1 items-center justify-center gap-3 px-8 pb-16">
+          <Text className="text-center text-lg text-foreground">Check your email</Text>
+          <Text className="text-center text-sm text-foreground-muted">
+            We sent a code to {email.trim()}.
+          </Text>
+          <AppTextInput
+            accessibilityLabel="One-time code"
+            value={code}
+            onChangeText={setCode}
+            placeholder="123456"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="number-pad"
+            editable={!pending}
+            onSubmitEditing={() => void verifyCode()}
+            className="w-full"
+          />
+          <Button
+            label={pending ? "Verifying…" : "Verify code"}
+            loading={pending}
+            onPress={() => void verifyCode()}
+          />
+          <Button
+            label="Resend code"
+            tone="secondary"
+            onPress={() => void resendCode()}
+          />
+          <Button label="Use a different email" tone="text" onPress={useDifferentEmail} />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View className="flex-1">
       <FallbackHeader title="T3 Connect" onBack={props.onBack} />
       <View className="flex-1 items-center justify-center gap-3 px-8 pb-16">
         <Text className="text-center text-lg text-foreground">Sign in to T3 Connect</Text>
         <Text className="text-center text-sm text-foreground-muted">
-          This build signs in through the browser, then returns here.
+          This build signs in with an email code, then returns here.
         </Text>
+        <AppTextInput
+          accessibilityLabel="Email address"
+          value={email}
+          onChangeText={setEmail}
+          placeholder="you@example.com"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="email-address"
+          autoComplete="email"
+          editable={!pending}
+          onSubmitEditing={() => void sendCode()}
+          className="w-full"
+        />
         <Button
-          label={pending ? "Waiting for the browser…" : "Sign in"}
+          label={pending ? "Sending code…" : "Send code"}
           loading={pending}
-          onPress={() => void signIn()}
+          onPress={() => void sendCode()}
         />
       </View>
     </View>
   );
+}
+
+function isIdentifierNotFoundError(error: unknown): boolean {
+  return getErrorCode(error) === "form_identifier_not_found";
+}
+
+function getErrorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+  const record = error as {
+    errors?: readonly { code?: string }[];
+    code?: string;
+  };
+  return record.errors?.[0]?.code ?? (typeof record.code === "string" ? record.code : null);
+}
+
+function clerkErrorMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null) {
+    const record = error as {
+      errors?: readonly { longMessage?: string; message?: string }[];
+      longMessage?: string;
+      message?: string;
+    };
+    const first = record.errors?.[0]?.longMessage ?? record.errors?.[0]?.message;
+    if (first) return first;
+    const direct =
+      typeof record.longMessage === "string"
+        ? record.longMessage
+        : typeof record.message === "string"
+          ? record.message
+          : null;
+    if (direct) return direct;
+  }
+  return error instanceof Error ? error.message : "The sign-in failed. Try again.";
 }
 
 function FallbackProfileView(props: { readonly onBack: () => void }) {
